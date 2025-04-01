@@ -275,25 +275,19 @@ ${rulesContent}`,
   },
 );
 
-// メイン関数
-async function main() {
-  try {
-    console.error("Weather & Rules MCP Server を起動中...");
-    
-    // 標準入出力トランスポートの設定
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    
-    console.error("Weather & Rules MCP Server が標準入出力で実行中");
-    console.error("利用可能なツール: get-alerts, get-forecast, get-nextjs-rules");
-    console.error("リクエスト待機中...");
-  } catch (error) {
-    console.error("Weather & Rules MCP Server の起動に失敗しました:", error);
-    process.exit(1);
-  }
+/**
+ * サーバーを起動する関数
+ */
+async function runServer() {
+  console.error("Weather & Rules MCP Server を起動中...");
+  
+  // 標準入出力トランスポートの設定
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  
+  console.error("Weather & Rules MCP Server が標準入出力で実行中");
+  console.error("利用可能なツール: get-alerts, get-forecast, get-nextjs-rules");
 }
-
-
 
 // プロセス終了ハンドラ
 process.on("SIGINT", () => {
@@ -307,7 +301,7 @@ process.on("uncaughtException", (error) => {
 });
 
 // サーバーの実行
-main().catch((error) => {
-  console.error("予期しないエラー:", error);
+runServer().catch((error) => {
+  console.error("Fatal error in runServer():", error);
   process.exit(1);
 });
