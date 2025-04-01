@@ -4,35 +4,37 @@
  *
  * 天気予報情報とNextJSルールを提供するMCPサーバー
  */
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+
 import { z } from "zod";
 import * as fs from "fs/promises";
-import * as path from "path";
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
 // 定数定義
 const NWS_API_BASE = "https://api.weather.gov";
 const USER_AGENT = "weather-rules-app/1.0";
 const VERSION = "1.0.0";
 
-// サーバーインスタンスの作成
-const server = new McpServer({
-  name: "weather-rules",
-  version: VERSION,
-  description: "天気予報情報とNextJSルールを提供するMCPサーバー"
-});
+const server = new Server(
+  {
+    name: "weather-rules-mcp-server",
+    version: VERSION,
+    description: "天気予報情報とNextJSルールを提供するMCPサーバー"
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
 
 // インターフェース定義
-interface AlertFeature {
-  properties: {
-    event?: string;
-    areaDesc?: string;
-    severity?: string;
-    status?: string;
-    headline?: string;
-  };
-}
-
 interface ForecastPeriod {
   name?: string;
   temperature?: number;
@@ -40,16 +42,6 @@ interface ForecastPeriod {
   windSpeed?: string;
   windDirection?: string;
   shortForecast?: string;
-}
-
-interface AlertsResponse {
-  features: AlertFeature[];
-}
-
-interface PointsResponse {
-  properties: {
-    forecast?: string;
-  };
 }
 
 interface ForecastResponse {
@@ -81,21 +73,6 @@ async function makeNWSRequest<T>(url: string): Promise<T | null> {
 }
 
 /**
- * アラートデータのフォーマット関数
- */
-function formatAlert(feature: AlertFeature): string {
-  const props = feature.properties;
-  return [
-    `Event: ${props.event || "Unknown"}`,
-    `Area: ${props.areaDesc || "Unknown"}`,
-    `Severity: ${props.severity || "Unknown"}`,
-    `Status: ${props.status || "Unknown"}`,
-    `Headline: ${props.headline || "No headline"}`,
-    "---",
-  ].join("\n");
-}
-
-/**
  * NextJSルールファイルを読み込む関数
  */
 async function readRulesFile(filePath: string): Promise<string | null> {
@@ -108,200 +85,160 @@ async function readRulesFile(filePath: string): Promise<string | null> {
   }
 }
 
-// 天気アラート取得ツールの登録
-server.tool(
-  "get-alerts",
-  "州の天気アラートを取得する",
-  {
-    state: z.string().length(2).describe("2文字の州コード (例: CA, NY)"),
-  },
-  async ({ state }) => {
-    const stateCode = state.toUpperCase();
-    const alertsUrl = `${NWS_API_BASE}/alerts?area=${stateCode}`;
-    const alertsData = await makeNWSRequest<AlertsResponse>(alertsUrl);
+// アラート関連の型定義
+interface AlertsResponse {
+  features: AlertFeature[];
+}
 
-    if (!alertsData) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "アラートデータの取得に失敗しました",
-          },
-        ],
-      };
-    }
+interface AlertFeature {
+  // アラート機能の型定義（必要に応じて拡張）
+  properties: {
+    headline?: string;
+    description?: string;
+    severity?: string;
+    event?: string;
+    effective?: string;
+    expires?: string;
+    // 他の必要なプロパティ
+  };
+}
 
-    const features = alertsData.features || [];
-    if (features.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${stateCode}のアクティブなアラートはありません`,
-          },
-        ],
-      };
-    }
+// アラート取得用のスキーマ定義
+const GetAlertsSchema = z.object({
+  state: z.string().length(2).describe("2文字の州コード (例: CA, NY)"),
+});
 
-    const formattedAlerts = features.map(formatAlert);
-    const alertsText = `${stateCode}のアクティブなアラート:\n\n${formattedAlerts.join("\n")}`;
+// ランダム整数生成用のスキーマ定義
+const RandomIntSchema = z.object({
+  min: z.number().int().default(1).describe("最小値（デフォルト: 1）"),
+  max: z.number().int().default(100).describe("最大値（デフォルト: 100）"),
+});
 
+// アラートのフォーマット関数
+function formatAlert(alert: AlertFeature): string {
+  const props = alert.properties;
+  return [
+    `イベント: ${props.event || '不明'}`,
+    `重要度: ${props.severity || '不明'}`,
+    `説明: ${props.description || '詳細なし'}`,
+    `有効期間: ${props.effective || '不明'} から ${props.expires || '不明'} まで`,
+    '---'
+  ].join('\n');
+}
+
+// アラート取得関数
+async function getStateAlerts(state: string) {
+  const stateCode = state.toUpperCase();
+  const alertsUrl = `${NWS_API_BASE}/alerts?area=${stateCode}`;
+  const alertsData = await makeNWSRequest<AlertsResponse>(alertsUrl);
+
+  if (!alertsData) {
     return {
       content: [
         {
           type: "text",
-          text: alertsText,
+          text: "アラートデータの取得に失敗しました",
         },
       ],
     };
-  },
-);
+  }
 
-// 天気予報取得ツールの登録
-server.tool(
-  "get-forecast",
-  "指定した位置の天気予報を取得する",
-  {
-    latitude: z.number().min(-90).max(90).describe("位置の緯度"),
-    longitude: z.number().min(-180).max(180).describe("位置の経度"),
-  },
-  async ({ latitude, longitude }) => {
-    // グリッドポイントデータの取得
-    const pointsUrl = `${NWS_API_BASE}/points/${latitude.toFixed(4)},${longitude.toFixed(4)}`;
-    const pointsData = await makeNWSRequest<PointsResponse>(pointsUrl);
-
-    if (!pointsData) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `座標: ${latitude}, ${longitude} のグリッドポイントデータの取得に失敗しました。この位置はNWS APIでサポートされていない可能性があります（米国内の位置のみサポート）。`,
-          },
-        ],
-      };
-    }
-
-    const forecastUrl = pointsData.properties?.forecast;
-    if (!forecastUrl) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "グリッドポイントデータから予報URLの取得に失敗しました",
-          },
-        ],
-      };
-    }
-
-    // 予報データの取得
-    const forecastData = await makeNWSRequest<ForecastResponse>(forecastUrl);
-    if (!forecastData) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "予報データの取得に失敗しました",
-          },
-        ],
-      };
-    }
-
-    const periods = forecastData.properties?.periods || [];
-    if (periods.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "利用可能な予報期間がありません",
-          },
-        ],
-      };
-    }
-
-    // 予報期間のフォーマット
-    const formattedForecast = periods.map((period: ForecastPeriod) =>
-      [
-        `${period.name || "不明"}:`,
-        `気温: ${period.temperature || "不明"}°${period.temperatureUnit || "F"}`,
-        `風: ${period.windSpeed || "不明"} ${period.windDirection || ""}`,
-        `${period.shortForecast || "予報なし"}`,
-        "---",
-      ].join("\n"),
-    );
-
-    const forecastText = `${latitude}, ${longitude}の予報:\n\n${formattedForecast.join("\n")}`;
-
+  const features = alertsData.features || [];
+  if (features.length === 0) {
     return {
       content: [
         {
           type: "text",
-          text: forecastText,
+          text: `${stateCode}のアクティブなアラートはありません`,
         },
       ],
     };
-  },
-);
+  }
 
-// NextJSルール取得ツールの登録
-server.tool(
-  "get-nextjs-rules",
-  "NextJS開発ルールを取得する",
-  {},
-  async () => {
-    const rulesPath = path.resolve(process.cwd(), '../rules/nextjs/rule.md');
-    const rulesContent = await readRulesFile(rulesPath);
-    
-    if (!rulesContent) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "NextJS開発ルールファイルの読み込みに失敗しました",
-          },
-        ],
-      };
+  const formattedAlerts = features.map(formatAlert);
+  const alertsText = `${stateCode}のアクティブなアラート:\n\n${formattedAlerts.join("\n")}`;
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: alertsText,
+      },
+    ],
+  };
+}
+
+// ツールリスト取得ハンドラー
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "get-alerts",
+        description: "州の天気アラートを取得する",
+        inputSchema: zodToJsonSchema(GetAlertsSchema),
+      },
+      {
+        name: "random-int",
+        description: '指定された範囲内のランダムな整数を生成する。例: random-int {"min": 5, "max": 25}',
+        inputSchema: zodToJsonSchema(RandomIntSchema),
+      },
+      // 他のツールを追加可能
+    ],
+  };
+});
+
+// ツール呼び出しハンドラー
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  try {
+    if (!request.params.arguments) {
+      throw new Error("引数が必要です");
     }
-    
-    return {
-      content: [
-        {
-          type: "text",
-          text: `NextJS開発ルール:
 
-${rulesContent}`,
-        },
-      ],
-    };
-  },
-);
+    switch (request.params.name) {
+      case "get-alerts": {
+        const args = GetAlertsSchema.parse(request.params.arguments);
+        return await getStateAlerts(args.state);
+      }
+
+      case "random-int": {
+        const args = RandomIntSchema.parse(request.params.arguments);
+        const min = args.min;
+        const max = args.max;
+        const randomInt = Math.floor(Math.random() * (max - min + 1)) + min;
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: `生成されたランダムな整数: ${randomInt}\n範囲: ${min} から ${max} まで`,
+            },
+          ],
+        };
+      }
+
+      default:
+        throw new Error(`未知のツール: ${request.params.name}`);
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`無効な入力: ${JSON.stringify(error.errors)}`);
+    }
+
+    throw error;
+  }
+});
 
 /**
  * サーバーを起動する関数
  */
 async function runServer() {
-  console.error("Weather & Rules MCP Server を起動中...");
-  
-  // 標準入出力トランスポートの設定
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  
-  console.error("Weather & Rules MCP Server が標準入出力で実行中");
-  console.error("利用可能なツール: get-alerts, get-forecast, get-nextjs-rules");
+  console.error("MCP Server running on stdio");
 }
-
-// プロセス終了ハンドラ
-process.on("SIGINT", () => {
-  console.error("サーバーをシャットダウンしています...");
-  process.exit(0);
-});
-
-// エラーハンドラ
-process.on("uncaughtException", (error) => {
-  console.error("キャッチされなかった例外:", error);
-});
 
 // サーバーの実行
 runServer().catch((error) => {
-  console.error("Fatal error in runServer():", error);
+  console.error("Fatal error in main():", error);
   process.exit(1);
 });
