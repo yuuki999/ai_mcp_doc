@@ -11,8 +11,6 @@ import * as fs from "fs/promises";
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 // 定数定義
-const NWS_API_BASE = "https://api.weather.gov";
-const USER_AGENT = "weather-rules-app/1.0";
 const VERSION = "1.0.0";
 
 const server = new Server(
@@ -75,7 +73,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const category = args.category;
         
         // ルールファイルを読み込む
-        const rulesFilePath = "/Users/yuuki/projects/itoi/ai_doc/rules/frontend/nextjs/rule.md";
+        const rulesFilePath = "/Users/yuuki/projects/itoi/zen-mcp-server/rules/frontend/nextjs/rule.md";
         const rulesContent = await readRulesFile(rulesFilePath);
         
         if (!rulesContent) {
